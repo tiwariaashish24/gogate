@@ -12,22 +12,25 @@ import (
 	"strings"
 	"time"
 
+	"gogate/internal/balancer"
 	"gogate/internal/registry"
 )
 
 type Route struct {
-	Prefix  string
-	Service string
-	Strip   string
+	Prefix   string
+	Service  string
+	Strip    string
+	Strategy balancer.Strategy
 }
 
 type instanceKey struct{}
 
 type route struct {
-	prefix  string
-	strip   string
-	service string
-	proxy   *httputil.ReverseProxy
+	prefix   string
+	strip    string
+	service  string
+	strategy balancer.Strategy
+	proxy    *httputil.ReverseProxy
 }
 
 type Proxy struct {
@@ -50,11 +53,16 @@ func New(routes []Route, reg *registry.Registry, timeout time.Duration) (*Proxy,
 		if strip == "" {
 			strip = prefix
 		}
+		strategy := rt.Strategy
+		if strategy == nil {
+			strategy = balancer.Random{}
+		}
 
 		p.routes = append(p.routes, route{
-			prefix:  prefix,
-			strip:   strip,
-			service: rt.Service,
+			prefix:   prefix,
+			strip:    strip,
+			service:  rt.Service,
+			strategy: strategy,
 			proxy: &httputil.ReverseProxy{
 				Rewrite: func(pr *httputil.ProxyRequest) {
 					inst, _ := pr.In.Context().Value(instanceKey{}).(*registry.Instance)
@@ -92,7 +100,7 @@ func New(routes []Route, reg *registry.Registry, timeout time.Duration) (*Proxy,
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for _, rt := range p.routes {
 		if r.URL.Path == rt.prefix || strings.HasPrefix(r.URL.Path, rt.prefix+"/") || rt.prefix == "/" {
-			inst := p.registry.Pick(rt.service)
+			inst := rt.strategy.Pick(rt.service, p.registry.HealthyInstances(rt.service))
 			if inst == nil {
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 					"error":   "service unavailable",

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"gogate/internal/balancer"
 	"gogate/internal/gateway"
 	"gogate/internal/proxy"
 	"gogate/internal/registry"
@@ -49,10 +50,15 @@ func main() {
 	reg := registry.New(envDuration("GOGATE_HEALTH_INTERVAL", 5*time.Second), envInt("GOGATE_HEALTH_MAX_FAILURES", 3))
 	go reg.Start(ctx)
 
+	strategy, err := balancer.New(envOr("GOGATE_LB_STRATEGY", "roundrobin"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	p, err := proxy.New([]proxy.Route{
-		{Prefix: "/api/users", Service: "users", Strip: "/api"},
-		{Prefix: "/api/products", Service: "products", Strip: "/api"},
-		{Prefix: "/api/orders", Service: "orders", Strip: "/api"},
+		{Prefix: "/api/users", Service: "users", Strip: "/api", Strategy: strategy},
+		{Prefix: "/api/products", Service: "products", Strip: "/api", Strategy: strategy},
+		{Prefix: "/api/orders", Service: "orders", Strip: "/api", Strategy: strategy},
 	}, reg, envDuration("GOGATE_PROXY_TIMEOUT", 10*time.Second))
 	if err != nil {
 		log.Fatal(err)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -43,9 +44,15 @@ func Register(ctx context.Context, baseURL, service, address string) error {
 }
 
 func RegisterWithRetry(ctx context.Context, baseURL, service, address string, interval time.Duration) {
+	registered := false
 	for {
 		if err := Register(ctx, baseURL, service, address); err == nil {
-			return
+			if !registered {
+				log.Printf("registered with gateway as %s@%s", service, address)
+				registered = true
+			}
+		} else {
+			registered = false
 		}
 		select {
 		case <-ctx.Done():

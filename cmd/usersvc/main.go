@@ -40,10 +40,7 @@ func registerWithGateway(service, addr string) {
 			registerAddr = addr
 		}
 	}
-	go func() {
-		regclient.RegisterWithRetry(context.Background(), envOr("GOGATE_REGISTRY_URL", "http://localhost:8080"), service, registerAddr, 2*time.Second)
-		log.Printf("registered with gateway as %s@%s", service, registerAddr)
-	}()
+	go regclient.RegisterWithRetry(context.Background(), envOr("GOGATE_REGISTRY_URL", "http://localhost:8080"), service, registerAddr, 5*time.Second)
 }
 
 func main() {

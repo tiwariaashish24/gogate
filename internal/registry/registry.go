@@ -3,7 +3,6 @@ package registry
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"net"
 	"net/http"
 	"sort"
@@ -58,11 +57,18 @@ func (r *Registry) Register(service, address string) (*Instance, error) {
 	}
 
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.services[service] == nil {
 		r.services[service] = make(map[string]*Instance)
 	}
+	for _, existing := range r.services[service] {
+		if existing.Address == inst.Address {
+			existing.Healthy = true
+			existing.Failures = 0
+			return existing, nil
+		}
+	}
 	r.services[service][inst.ID] = inst
-	r.mu.Unlock()
 	return inst, nil
 }
 
@@ -98,14 +104,6 @@ func (r *Registry) HealthyInstances(service string) []*Instance {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.healthyLocked(service)
-}
-
-func (r *Registry) Pick(service string) *Instance {
-	instances := r.HealthyInstances(service)
-	if len(instances) == 0 {
-		return nil
-	}
-	return instances[rand.Intn(len(instances))]
 }
 
 func (r *Registry) Snapshot() map[string][]*Instance {
