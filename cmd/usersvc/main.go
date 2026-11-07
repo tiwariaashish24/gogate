@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"time"
+
+	"gogate/internal/registryclient"
 )
 
 var users = []map[string]any{
@@ -24,6 +29,21 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+func registerWithGateway(service, addr string) {
+	registerAddr := envOr("REGISTER_ADDRESS", "")
+	if registerAddr == "" {
+		if strings.HasPrefix(addr, ":") {
+			registerAddr = "localhost" + addr
+		} else {
+			registerAddr = addr
+		}
+	}
+	go func() {
+		regclient.RegisterWithRetry(context.Background(), envOr("GOGATE_REGISTRY_URL", "http://localhost:8080"), service, registerAddr, 2*time.Second)
+		log.Printf("registered with gateway as %s@%s", service, registerAddr)
+	}()
 }
 
 func main() {
@@ -50,6 +70,7 @@ func main() {
 	})
 
 	addr := envOr("USER_SERVICE_ADDR", ":8081")
+	registerWithGateway("users", addr)
 	log.Printf("user service listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
 }

@@ -8,10 +8,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
+	"gogate/internal/gateway"
 	"gogate/internal/proxy"
+	"gogate/internal/registry"
 )
 
 func envOr(key, fallback string) string {
@@ -21,12 +24,36 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+func envDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	reg := registry.New(envDuration("GOGATE_HEALTH_INTERVAL", 5*time.Second), envInt("GOGATE_HEALTH_MAX_FAILURES", 3))
+	go reg.Start(ctx)
+
 	p, err := proxy.New([]proxy.Route{
-		{Prefix: "/api/users", Target: envOr("GOGATE_USER_TARGET", "http://localhost:8081"), Strip: "/api"},
-		{Prefix: "/api/products", Target: envOr("GOGATE_PRODUCT_TARGET", "http://localhost:8082"), Strip: "/api"},
-		{Prefix: "/api/orders", Target: envOr("GOGATE_ORDER_TARGET", "http://localhost:8083"), Strip: "/api"},
-	}, 10*time.Second)
+		{Prefix: "/api/users", Service: "users", Strip: "/api"},
+		{Prefix: "/api/products", Service: "products", Strip: "/api"},
+		{Prefix: "/api/orders", Service: "orders", Strip: "/api"},
+	}, reg, envDuration("GOGATE_PROXY_TIMEOUT", 10*time.Second))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -36,6 +63,7 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
+	mux.Handle("/registry/", gateway.RegistryAPI(reg))
 	mux.Handle("/", p)
 
 	addr := envOr("GOGATE_ADDR", ":8080")
@@ -48,13 +76,11 @@ func main() {
 		}
 	}()
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
+	<-ctx.Done()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("graceful shutdown failed: %v", err)
 	}
 }

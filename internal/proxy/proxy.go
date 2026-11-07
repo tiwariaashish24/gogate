@@ -11,36 +11,37 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"gogate/internal/registry"
 )
 
 type Route struct {
-	Prefix string
-	Target string
-	Strip  string
+	Prefix  string
+	Service string
+	Strip   string
 }
 
+type instanceKey struct{}
+
 type route struct {
-	prefix string
-	strip  string
-	proxy  *httputil.ReverseProxy
+	prefix  string
+	strip   string
+	service string
+	proxy   *httputil.ReverseProxy
 }
 
 type Proxy struct {
-	routes  []route
-	timeout time.Duration
+	routes   []route
+	registry *registry.Registry
+	timeout  time.Duration
 }
 
-func New(routes []Route, timeout time.Duration) (*Proxy, error) {
-	p := &Proxy{timeout: timeout}
+func New(routes []Route, reg *registry.Registry, timeout time.Duration) (*Proxy, error) {
+	p := &Proxy{registry: reg, timeout: timeout}
 	for _, rt := range routes {
-		target, err := url.Parse(rt.Target)
-		if err != nil {
-			return nil, fmt.Errorf("invalid target %q for prefix %q: %w", rt.Target, rt.Prefix, err)
+		if rt.Service == "" {
+			return nil, fmt.Errorf("route for prefix %q must specify a service", rt.Prefix)
 		}
-		if target.Scheme == "" || target.Host == "" {
-			return nil, fmt.Errorf("target %q for prefix %q must be an absolute URL", rt.Target, rt.Prefix)
-		}
-
 		prefix := rt.Prefix
 		if !strings.HasPrefix(prefix, "/") {
 			prefix = "/" + prefix
@@ -51,11 +52,16 @@ func New(routes []Route, timeout time.Duration) (*Proxy, error) {
 		}
 
 		p.routes = append(p.routes, route{
-			prefix: prefix,
-			strip:  strip,
+			prefix:  prefix,
+			strip:   strip,
+			service: rt.Service,
 			proxy: &httputil.ReverseProxy{
 				Rewrite: func(pr *httputil.ProxyRequest) {
-					pr.SetURL(target)
+					inst, _ := pr.In.Context().Value(instanceKey{}).(*registry.Instance)
+					if inst == nil {
+						return
+					}
+					pr.SetURL(&url.URL{Scheme: "http", Host: inst.Address})
 					path := pr.Out.URL.Path
 					if strings.HasPrefix(path, strip) {
 						path = strings.TrimPrefix(path, strip)
@@ -67,7 +73,7 @@ func New(routes []Route, timeout time.Duration) (*Proxy, error) {
 						path = "/" + path
 					}
 					pr.Out.URL.Path = path
-					pr.Out.Host = target.Host
+					pr.Out.Host = inst.Address
 				},
 				ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 					log.Printf("proxy error: %s %s: %v", r.Method, r.URL.Path, err)
@@ -86,12 +92,21 @@ func New(routes []Route, timeout time.Duration) (*Proxy, error) {
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for _, rt := range p.routes {
 		if r.URL.Path == rt.prefix || strings.HasPrefix(r.URL.Path, rt.prefix+"/") || rt.prefix == "/" {
-			if p.timeout > 0 {
-				ctx, cancel := context.WithTimeout(r.Context(), p.timeout)
-				defer cancel()
-				r = r.WithContext(ctx)
+			inst := p.registry.Pick(rt.service)
+			if inst == nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+					"error":   "service unavailable",
+					"service": rt.service,
+				})
+				return
 			}
-			rt.proxy.ServeHTTP(w, r)
+			ctx := context.WithValue(r.Context(), instanceKey{}, inst)
+			if p.timeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, p.timeout)
+				defer cancel()
+			}
+			rt.proxy.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 	}
